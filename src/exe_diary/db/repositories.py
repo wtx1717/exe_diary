@@ -79,6 +79,41 @@ class ActivityRepository:
         return [dict(row) for row in rows]
 
 
+class ActivityNoteRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def upsert(self, activity_id: int, note: dict) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO activity_notes (
+              activity_id, fatigue_level, soreness_level, sleep_quality,
+              mood, rpe, pain_note, summary
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(activity_id) DO UPDATE SET
+              fatigue_level = excluded.fatigue_level,
+              soreness_level = excluded.soreness_level,
+              sleep_quality = excluded.sleep_quality,
+              mood = excluded.mood,
+              rpe = excluded.rpe,
+              pain_note = excluded.pain_note,
+              summary = excluded.summary,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                activity_id,
+                note.get("fatigue_level"),
+                note.get("soreness_level"),
+                note.get("sleep_quality"),
+                note.get("mood"),
+                note.get("rpe"),
+                note.get("pain_note"),
+                note.get("summary"),
+            ),
+        )
+
+
 class SyncRunRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -116,4 +151,3 @@ class SyncRunRepository:
                 run_id,
             ),
         )
-

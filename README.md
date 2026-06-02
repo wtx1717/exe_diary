@@ -78,18 +78,50 @@ EXE_DIARY_LOG_DIR=logs
 
 ```bash
 exe-diary init-db
+exe-diary run
+exe-diary run --limit 1
 exe-diary sync-today
 exe-diary sync-today --limit 1
 exe-diary sync-range --from-date 2026-06-01 --to-date 2026-06-02
 exe-diary sync-range --from-date 2026-06-01 --to-date 2026-06-02 --limit 2
 exe-diary sync-latest --limit 2
 exe-diary pending-notes
+exe-diary prompt-notes
 ```
 
 开发阶段也可以使用：
 
 ```bash
 python -m exe_diary.main init-db
+python -m exe_diary.main run
+```
+
+## 当前阶段使用方式
+
+1. 安装项目和依赖：
+
+```bash
+pip install -e .[fit]
+```
+
+2. 复制 `.env.example` 为 `.env`，填写 Garmin 账号。
+
+3. 初始化数据库：
+
+```bash
+exe-diary init-db
+```
+
+4. 运行完整流程：
+
+```bash
+exe-diary run
+```
+
+`run` 会先同步当天跑步活动，再对尚未填写主观记录的活动弹出窗口。若只想补填已入库但未填写的记录，使用：
+
+```bash
+exe-diary prompt-notes
 ```
 
 ## 数据库表

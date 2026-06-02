@@ -4,10 +4,11 @@ from datetime import date
 
 from exe_diary.config import Settings
 from exe_diary.db.database import Database
-from exe_diary.db.repositories import ActivityRepository, SyncRunRepository
+from exe_diary.db.repositories import ActivityNoteRepository, ActivityRepository, SyncRunRepository
 from exe_diary.fit.parser import FitParser
 from exe_diary.garmin.client import GarminClient
 from exe_diary.garmin.sync import GarminSyncService, SyncResult
+from exe_diary.ui.prompt import PromptService
 
 
 class AppWorkflow:
@@ -24,6 +25,11 @@ class AppWorkflow:
 
     def sync_latest(self, max_activities: int = 2) -> SyncResult:
         return self._run_sync(from_date=None, to_date=None, max_activities=max_activities)
+
+    def run(self, max_activities: int | None = None) -> tuple[SyncResult, int]:
+        sync_result = self.sync_today(max_activities=max_activities)
+        saved_count = self.prompt_pending_notes()
+        return sync_result, saved_count
 
     def _run_sync(
         self,
@@ -70,3 +76,23 @@ class AppWorkflow:
         self._database.initialize()
         with self._database.connect() as connection:
             return ActivityRepository(connection).list_without_notes()
+
+    def prompt_pending_notes(self) -> int:
+        self._database.initialize()
+        saved_count = 0
+
+        with self._database.connect() as connection:
+            activity_repo = ActivityRepository(connection)
+            note_repo = ActivityNoteRepository(connection)
+            prompt = PromptService()
+
+            for activity in activity_repo.list_without_notes():
+                note = prompt.collect_note(activity)
+                if note is None:
+                    continue
+
+                note_repo.upsert(activity_id=int(activity["id"]), note=note)
+                connection.commit()
+                saved_count += 1
+
+        return saved_count

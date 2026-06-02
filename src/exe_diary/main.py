@@ -17,6 +17,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="initialize the local SQLite database")
+
+    run = subparsers.add_parser("run", help="sync today's activities and prompt for subjective notes")
+    run.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
+
     sync_today = subparsers.add_parser("sync-today", help="sync today's Garmin running activities")
     sync_today.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
 
@@ -29,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_latest.add_argument("--limit", type=int, default=2, help="maximum number of running activities to process")
 
     subparsers.add_parser("pending-notes", help="list activities that still need subjective notes")
+    subparsers.add_parser("prompt-notes", help="open note prompts for activities that still need subjective notes")
     return parser
 
 
@@ -43,6 +48,12 @@ def main() -> None:
         return
 
     workflow = AppWorkflow(settings, database)
+
+    if args.command == "run":
+        sync_result, saved_count = workflow.run(max_activities=args.limit)
+        print(sync_result.summary_text())
+        print(f"notes saved: {saved_count}")
+        return
 
     if args.command == "sync-today":
         result = workflow.sync_today(max_activities=args.limit)
@@ -62,6 +73,11 @@ def main() -> None:
     if args.command == "pending-notes":
         for activity in workflow.list_pending_notes():
             print(f"{activity['local_id']} {activity['start_time']} {activity['activity_name']}")
+        return
+
+    if args.command == "prompt-notes":
+        saved_count = workflow.prompt_pending_notes()
+        print(f"notes saved: {saved_count}")
         return
 
 
