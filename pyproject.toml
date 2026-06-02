@@ -22,6 +22,9 @@ dev = [
 [project.scripts]
 exe-diary = "exe_diary.main:main"
 
+[project.gui-scripts]
+exe-diary-gui = "exe_diary.gui:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

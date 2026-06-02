@@ -7,16 +7,24 @@ import tkinter as tk
 class PromptService:
     """Tkinter-based prompt for collecting subjective activity notes."""
 
+    def __init__(self, parent: tk.Misc | None = None) -> None:
+        self._parent = parent
+
     def collect_note(self, activity: dict) -> dict | None:
         result: dict | None = None
+        owns_root = self._parent is None
+        window = tk.Tk() if owns_root else tk.Toplevel(self._parent)
 
-        root = tk.Tk()
-        root.title("exe_diary 训练记录")
-        root.resizable(False, False)
-        root.attributes("-topmost", True)
+        window.title("exe_diary 训练记录")
+        window.resizable(False, False)
+        if owns_root:
+            window.attributes("-topmost", True)
+        else:
+            window.transient(self._parent)
 
-        frame = ttk.Frame(root, padding=16)
+        frame = ttk.Frame(window, padding=16)
         frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
 
         title = ttk.Label(frame, text="补充训练记录", font=("", 13, "bold"))
         title.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -83,18 +91,27 @@ class PromptService:
                     "summary": summary_text.get("1.0", "end").strip(),
                 }
             except (ValueError, tk.TclError) as exc:
-                messagebox.showerror("输入错误", str(exc), parent=root)
+                messagebox.showerror("输入错误", str(exc), parent=window)
                 return
-            root.destroy()
+            window.destroy()
 
         def later() -> None:
-            root.destroy()
+            window.destroy()
 
         ttk.Button(buttons, text="稍后", command=later).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="保存", command=save).grid(row=0, column=1)
 
-        root.protocol("WM_DELETE_WINDOW", later)
-        root.mainloop()
+        window.protocol("WM_DELETE_WINDOW", later)
+        window.update_idletasks()
+        _center_window(window)
+
+        if owns_root:
+            window.mainloop()
+        else:
+            window.grab_set()
+            window.focus_set()
+            window.wait_window()
+
         return result
 
 
@@ -125,6 +142,16 @@ def _activity_summary(activity: dict) -> str:
         f"平均心率：{_value(activity.get('avg_hr'), 'bpm')}",
     ]
     return "\n".join(lines)
+
+
+def _center_window(window: tk.Misc) -> None:
+    width = window.winfo_width()
+    height = window.winfo_height()
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    x = max((screen_width - width) // 2, 0)
+    y = max((screen_height - height) // 2, 0)
+    window.geometry(f"+{x}+{y}")
 
 
 def _km(value: object) -> str:

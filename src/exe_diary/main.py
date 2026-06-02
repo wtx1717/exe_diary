@@ -34,11 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("pending-notes", help="list activities that still need subjective notes")
     subparsers.add_parser("prompt-notes", help="open note prompts for activities that still need subjective notes")
+    subparsers.add_parser("gui", help="open the desktop visual interface")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+
+    if args.command == "gui":
+        from exe_diary.ui.app import main as gui_main
+
+        gui_main()
+        return
+
     settings = load_settings()
     database = Database(settings.db_path)
 

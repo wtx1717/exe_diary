@@ -40,12 +40,32 @@ class Settings:
     garth_session_dir: Path
 
 
-def load_settings() -> Settings:
-    _load_dotenv(Path(".env"))
+def _app_dir() -> Path:
+    package_dir = Path(__file__).resolve().parent
+    if package_dir.parent.name == "src":
+        return package_dir.parent.parent
+    return package_dir.parent
 
-    data_dir = Path(os.getenv("EXE_DIARY_DATA_DIR", "data")).resolve()
-    db_path = Path(os.getenv("EXE_DIARY_DB_PATH", data_dir / "exe_diary.sqlite")).resolve()
-    log_dir = Path(os.getenv("EXE_DIARY_LOG_DIR", "logs")).resolve()
+
+def _path_from_env(name: str, default: Path, base_dir: Path) -> Path:
+    raw_value = os.getenv(name)
+    path = Path(raw_value) if raw_value else default
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
+
+
+def load_settings() -> Settings:
+    app_dir = _app_dir()
+    cwd_env = Path(".env").resolve()
+    app_env = app_dir / ".env"
+    if cwd_env != app_env:
+        _load_dotenv(cwd_env)
+    _load_dotenv(app_env)
+
+    data_dir = _path_from_env("EXE_DIARY_DATA_DIR", app_dir / "data", app_dir)
+    db_path = _path_from_env("EXE_DIARY_DB_PATH", data_dir / "exe_diary.sqlite", app_dir)
+    log_dir = _path_from_env("EXE_DIARY_LOG_DIR", app_dir / "logs", app_dir)
     fit_raw_dir = data_dir / "fit" / "raw"
     garth_session_dir = data_dir / ".garth_session"
 

@@ -78,6 +78,21 @@ class ActivityRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_recent(self, limit: int = 50) -> list[dict]:
+        rows = self._connection.execute(
+            """
+            SELECT
+              a.*,
+              CASE WHEN n.id IS NULL THEN 0 ELSE 1 END AS has_note
+            FROM activities a
+            LEFT JOIN activity_notes n ON n.activity_id = a.id
+            ORDER BY a.start_time DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
 
 class ActivityNoteRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -151,3 +166,15 @@ class SyncRunRepository:
                 run_id,
             ),
         )
+
+    def list_recent(self, limit: int = 20) -> list[dict]:
+        rows = self._connection.execute(
+            """
+            SELECT *
+            FROM sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
