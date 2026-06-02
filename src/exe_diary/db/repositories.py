@@ -93,6 +93,51 @@ class ActivityRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_between(self, from_date: str, to_date: str) -> list[dict]:
+        rows = self._connection.execute(
+            """
+            SELECT
+              a.*,
+              CASE WHEN n.id IS NULL THEN 0 ELSE 1 END AS has_note
+            FROM activities a
+            LEFT JOIN activity_notes n ON n.activity_id = a.id
+            WHERE a.start_date BETWEEN ? AND ?
+            ORDER BY a.start_time DESC
+            """,
+            (from_date, to_date),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_with_note(self, activity_id: int) -> dict | None:
+        row = self._connection.execute(
+            """
+            SELECT
+              a.*,
+              CASE WHEN n.id IS NULL THEN 0 ELSE 1 END AS has_note,
+              n.fatigue_level AS note_fatigue_level,
+              n.soreness_level AS note_soreness_level,
+              n.sleep_quality AS note_sleep_quality,
+              n.mood AS note_mood,
+              n.rpe AS note_rpe,
+              n.pain_note AS note_pain_note,
+              n.summary AS note_summary,
+              n.created_at AS note_created_at,
+              n.updated_at AS note_updated_at
+            FROM activities a
+            LEFT JOIN activity_notes n ON n.activity_id = a.id
+            WHERE a.id = ?
+            """,
+            (activity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def delete(self, activity_id: int) -> bool:
+        before = self._connection.total_changes
+        self._connection.execute("DELETE FROM activities WHERE id = ?", (activity_id,))
+        return self._connection.total_changes > before
+
 
 class ActivityNoteRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:

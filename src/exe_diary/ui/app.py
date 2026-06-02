@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 import queue
 import threading
 import tkinter as tk
@@ -33,7 +33,11 @@ class DiaryDesktopApp:
         self._limit_var = tk.StringVar(value="")
         self._from_date_var = tk.StringVar(value=date.today().isoformat())
         self._to_date_var = tk.StringVar(value=date.today().isoformat())
+        self._view_mode_var = tk.StringVar(value="day")
+        self._view_start_var = tk.StringVar(value=date.today().isoformat())
+        self._view_end_var = tk.StringVar(value=date.today().isoformat())
         self._status_var = tk.StringVar(value="就绪")
+        self._active_activity_tree: ttk.Treeview | None = None
 
         self._build()
         self._root.after(100, self._drain_events)
@@ -91,7 +95,19 @@ class DiaryDesktopApp:
             pady=3,
         )
         ttk.Button(actions, text="补填待记录活动", command=self.prompt_notes).grid(row=5, column=0, sticky="ew", pady=3)
-        ttk.Button(actions, text="刷新", command=self.refresh).grid(row=6, column=0, sticky="ew", pady=(10, 3))
+        ttk.Button(actions, text="查看活动详情", command=self._show_selected_activity_detail).grid(
+            row=6,
+            column=0,
+            sticky="ew",
+            pady=(10, 3),
+        )
+        ttk.Button(actions, text="删除选中活动", command=self._delete_selected_activity).grid(
+            row=7,
+            column=0,
+            sticky="ew",
+            pady=3,
+        )
+        ttk.Button(actions, text="刷新", command=self.refresh).grid(row=8, column=0, sticky="ew", pady=(10, 3))
 
     def _build_settings(self, parent: ttk.Frame) -> None:
         settings = ttk.LabelFrame(parent, text="同步参数", padding=10)
@@ -119,7 +135,8 @@ class DiaryDesktopApp:
 
         recent_frame = ttk.Frame(notebook, padding=(0, 8, 0, 0))
         recent_frame.columnconfigure(0, weight=1)
-        recent_frame.rowconfigure(0, weight=1)
+        recent_frame.rowconfigure(1, weight=1)
+        self._build_activity_view_controls(recent_frame)
         self._recent_tree = ttk.Treeview(
             recent_frame,
             columns=("time", "name", "distance", "duration", "pace", "hr", "note"),
@@ -138,11 +155,12 @@ class DiaryDesktopApp:
                 "note": ("记录", 70),
             },
         )
-        self._recent_tree.grid(row=0, column=0, sticky="nsew")
+        self._recent_tree.grid(row=1, column=0, sticky="nsew")
         recent_scrollbar = ttk.Scrollbar(recent_frame, orient="vertical", command=self._recent_tree.yview)
-        recent_scrollbar.grid(row=0, column=1, sticky="ns")
+        recent_scrollbar.grid(row=1, column=1, sticky="ns")
         self._recent_tree.configure(yscrollcommand=recent_scrollbar.set)
-        notebook.add(recent_frame, text="最近活动")
+        self._bind_activity_tree(self._recent_tree)
+        notebook.add(recent_frame, text="活动")
 
         pending_frame = ttk.Frame(notebook, padding=(0, 8, 0, 0))
         pending_frame.columnconfigure(0, weight=1)
@@ -168,6 +186,7 @@ class DiaryDesktopApp:
         pending_scrollbar = ttk.Scrollbar(pending_frame, orient="vertical", command=self._pending_tree.yview)
         pending_scrollbar.grid(row=0, column=1, sticky="ns")
         self._pending_tree.configure(yscrollcommand=pending_scrollbar.set)
+        self._bind_activity_tree(self._pending_tree)
         notebook.add(pending_frame, text="待补填")
 
         sync_frame = ttk.Frame(notebook, padding=(0, 8, 0, 0))
@@ -197,6 +216,36 @@ class DiaryDesktopApp:
         self._sync_tree.configure(yscrollcommand=sync_scrollbar.set)
         notebook.add(sync_frame, text="同步记录")
 
+    def _build_activity_view_controls(self, parent: ttk.Frame) -> None:
+        controls = ttk.Frame(parent)
+        controls.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        controls.columnconfigure(8, weight=1)
+
+        ttk.Label(controls, text="视角").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        view_options = (("日", "day"), ("周", "week"), ("月", "month"), ("自定义", "custom"))
+        for index, (label, value) in enumerate(view_options, start=1):
+            ttk.Radiobutton(
+                controls,
+                text=label,
+                value=value,
+                variable=self._view_mode_var,
+                command=self._apply_activity_view,
+            ).grid(row=0, column=index, sticky="w", padx=2)
+
+        ttk.Label(controls, text="开始").grid(row=0, column=5, sticky="e", padx=(14, 4))
+        ttk.Entry(controls, textvariable=self._view_start_var, width=12).grid(row=0, column=6, sticky="w")
+        ttk.Label(controls, text="结束").grid(row=0, column=7, sticky="e", padx=(10, 4))
+        ttk.Entry(controls, textvariable=self._view_end_var, width=12).grid(row=0, column=8, sticky="w")
+
+        ttk.Button(controls, text="应用", command=self._apply_activity_view).grid(row=0, column=9, padx=(10, 0))
+        ttk.Button(controls, text="今天", command=self._show_today).grid(row=0, column=10, padx=(6, 0))
+        ttk.Button(controls, text="详情", command=self._show_selected_activity_detail).grid(row=0, column=11, padx=(14, 0))
+        ttk.Button(controls, text="删除", command=self._delete_selected_activity).grid(row=0, column=12, padx=(6, 0))
+
+    def _bind_activity_tree(self, tree: ttk.Treeview) -> None:
+        tree.bind("<<TreeviewSelect>>", lambda _event, selected_tree=tree: self._remember_activity_tree(selected_tree))
+        tree.bind("<Double-1>", lambda _event: self._show_selected_activity_detail())
+
     def _build_log(self, parent: ttk.Frame) -> None:
         log_frame = ttk.LabelFrame(parent, text="日志", padding=8)
         log_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
@@ -212,9 +261,10 @@ class DiaryDesktopApp:
 
     def refresh(self) -> None:
         try:
+            from_date, to_date = self._activity_view_dates()
             self._database.initialize()
             with self._database.connect() as connection:
-                activities = ActivityRepository(connection).list_recent(limit=50)
+                activities = ActivityRepository(connection).list_between(from_date.isoformat(), to_date.isoformat())
                 pending = ActivityRepository(connection).list_without_notes()
                 sync_runs = SyncRunRepository(connection).list_recent(limit=30)
         except Exception as exc:
@@ -222,10 +272,11 @@ class DiaryDesktopApp:
             self._append_log(f"刷新失败：{exc}")
             return
 
-        self._replace_rows(
+        self._replace_activity_rows(
             self._recent_tree,
             [
                 (
+                    int(activity["id"]),
                     activity.get("start_time"),
                     activity.get("activity_name"),
                     _km(activity.get("distance_m")),
@@ -237,10 +288,11 @@ class DiaryDesktopApp:
                 for activity in activities
             ],
         )
-        self._replace_rows(
+        self._replace_activity_rows(
             self._pending_tree,
             [
                 (
+                    int(activity["id"]),
                     activity.get("start_time"),
                     activity.get("activity_name"),
                     _km(activity.get("distance_m")),
@@ -266,7 +318,254 @@ class DiaryDesktopApp:
                 for run in sync_runs
             ],
         )
-        self._set_status(f"就绪：最近活动 {len(activities)}，待补填 {len(pending)}")
+        self._set_status(
+            f"就绪：{self._activity_view_label()} {from_date.isoformat()} 至 {to_date.isoformat()} "
+            f"{len(activities)} 条，待补填 {len(pending)}"
+        )
+
+    def _activity_view_dates(self) -> tuple[date, date]:
+        mode = self._view_mode_var.get()
+        anchor = _read_date_text(self._view_start_var.get(), "开始日期")
+
+        if mode == "day":
+            from_date = anchor
+            to_date = anchor
+        elif mode == "week":
+            from_date = anchor - timedelta(days=anchor.weekday())
+            to_date = from_date + timedelta(days=6)
+        elif mode == "month":
+            from_date = anchor.replace(day=1)
+            if from_date.month == 12:
+                next_month = from_date.replace(year=from_date.year + 1, month=1)
+            else:
+                next_month = from_date.replace(month=from_date.month + 1)
+            to_date = next_month - timedelta(days=1)
+        elif mode == "custom":
+            from_date = anchor
+            to_date = _read_date_text(self._view_end_var.get(), "结束日期")
+            if from_date > to_date:
+                raise ValueError("开始日期不能晚于结束日期。")
+        else:
+            raise ValueError(f"未知视角：{mode}")
+
+        self._view_start_var.set(from_date.isoformat())
+        self._view_end_var.set(to_date.isoformat())
+        return from_date, to_date
+
+    def _activity_view_label(self) -> str:
+        return {
+            "day": "日视角",
+            "week": "周视角",
+            "month": "月视角",
+            "custom": "自定义视角",
+        }.get(self._view_mode_var.get(), "活动")
+
+    def _apply_activity_view(self) -> None:
+        self.refresh()
+
+    def _show_today(self) -> None:
+        today = date.today().isoformat()
+        self._view_mode_var.set("day")
+        self._view_start_var.set(today)
+        self._view_end_var.set(today)
+        self.refresh()
+
+    def _remember_activity_tree(self, tree: ttk.Treeview) -> None:
+        self._active_activity_tree = tree
+
+    def _selected_activity_id(self) -> int | None:
+        trees: list[ttk.Treeview] = []
+        if self._active_activity_tree is not None:
+            trees.append(self._active_activity_tree)
+        for tree in (self._recent_tree, self._pending_tree):
+            if tree not in trees:
+                trees.append(tree)
+
+        for tree in trees:
+            selection = tree.selection()
+            if not selection:
+                continue
+            try:
+                return int(selection[0])
+            except ValueError:
+                continue
+        return None
+
+    def _show_selected_activity_detail(self) -> None:
+        activity_id = self._selected_activity_id()
+        if activity_id is None:
+            messagebox.showinfo("未选择活动", "请先在活动列表中选择一条活动。", parent=self._root)
+            return
+
+        activity = self._load_activity(activity_id)
+        if activity is None:
+            messagebox.showinfo("活动不存在", "该活动可能已经被删除，请刷新后重试。", parent=self._root)
+            self.refresh()
+            return
+
+        self._open_activity_detail(activity)
+
+    def _load_activity(self, activity_id: int) -> dict | None:
+        self._database.initialize()
+        with self._database.connect() as connection:
+            return ActivityRepository(connection).get_with_note(activity_id)
+
+    def _open_activity_detail(self, activity: dict) -> None:
+        window = tk.Toplevel(self._root)
+        window.title("活动详情")
+        window.geometry("660x620")
+        window.minsize(560, 480)
+        window.transient(self._root)
+
+        root = ttk.Frame(window, padding=14)
+        root.grid(row=0, column=0, sticky="nsew")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        title = ttk.Label(root, text=activity.get("activity_name") or "未命名活动", font=("", 14, "bold"))
+        title.grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        notebook = ttk.Notebook(root)
+        notebook.grid(row=1, column=0, sticky="nsew")
+
+        basic = ttk.Frame(notebook, padding=12)
+        basic.columnconfigure(1, weight=1)
+        self._add_detail_rows(
+            basic,
+            [
+                ("时间", activity.get("start_time")),
+                ("日期", activity.get("start_date")),
+                ("活动类型", activity.get("sport_type")),
+                ("来源", activity.get("source")),
+                ("本地 ID", activity.get("local_id")),
+                ("外部 ID", activity.get("external_id")),
+                ("创建时间", activity.get("created_at")),
+                ("更新时间", activity.get("updated_at")),
+            ],
+        )
+        notebook.add(basic, text="基本信息")
+
+        metrics = ttk.Frame(notebook, padding=12)
+        metrics.columnconfigure(1, weight=1)
+        self._add_detail_rows(
+            metrics,
+            [
+                ("距离", _km(activity.get("distance_m"))),
+                ("用时", _duration(activity.get("duration_s"))),
+                ("移动时间", _duration(activity.get("moving_time_s"))),
+                ("平均配速", _pace(activity.get("avg_pace_s_per_km"))),
+                ("平均心率", _value(activity.get("avg_hr"))),
+                ("最高心率", _value(activity.get("max_hr"))),
+                ("平均步频", _value(activity.get("avg_cadence"))),
+                ("爬升", _meters(activity.get("elevation_gain_m"))),
+                ("卡路里", _value(activity.get("calories"))),
+                ("训练效果", _value(activity.get("training_effect"))),
+            ],
+        )
+        notebook.add(metrics, text="运动指标")
+
+        note = ttk.Frame(notebook, padding=12)
+        note.columnconfigure(1, weight=1)
+        if activity.get("has_note"):
+            self._add_detail_rows(
+                note,
+                [
+                    ("疲劳程度", _value(activity.get("note_fatigue_level"))),
+                    ("酸痛/疼痛", _value(activity.get("note_soreness_level"))),
+                    ("睡眠质量", _value(activity.get("note_sleep_quality"))),
+                    ("RPE", _value(activity.get("note_rpe"))),
+                    ("心情", activity.get("note_mood") or "未知"),
+                    ("异常疼痛", activity.get("note_pain_note") or "无"),
+                    ("训练备注", activity.get("note_summary") or "无"),
+                    ("记录时间", activity.get("note_created_at")),
+                    ("更新时间", activity.get("note_updated_at")),
+                ],
+                wraplength=450,
+            )
+        else:
+            ttk.Label(note, text="这条活动还没有主观记录。").grid(row=0, column=0, sticky="w")
+        notebook.add(note, text="主观记录")
+
+        files = ttk.Frame(notebook, padding=12)
+        files.columnconfigure(1, weight=1)
+        self._add_detail_rows(
+            files,
+            [
+                ("FIT 路径", activity.get("fit_path")),
+                ("FIT SHA256", activity.get("fit_sha256")),
+            ],
+            wraplength=470,
+        )
+        notebook.add(files, text="文件")
+
+        buttons = ttk.Frame(root)
+        buttons.grid(row=2, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(
+            buttons,
+            text="删除活动",
+            command=lambda: self._delete_activity_by_id(int(activity["id"]), window),
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="关闭", command=window.destroy).grid(row=0, column=1)
+
+    def _add_detail_rows(
+        self,
+        parent: ttk.Frame,
+        rows: list[tuple[str, object]],
+        wraplength: int = 380,
+    ) -> None:
+        for index, (label, value) in enumerate(rows):
+            ttk.Label(parent, text=label).grid(row=index, column=0, sticky="nw", pady=4, padx=(0, 12))
+            ttk.Label(parent, text=_detail_value(value), wraplength=wraplength, justify="left").grid(
+                row=index,
+                column=1,
+                sticky="ew",
+                pady=4,
+            )
+
+    def _delete_selected_activity(self) -> None:
+        activity_id = self._selected_activity_id()
+        if activity_id is None:
+            messagebox.showinfo("未选择活动", "请先在活动列表中选择一条活动。", parent=self._root)
+            return
+        self._delete_activity_by_id(activity_id, self._root)
+
+    def _delete_activity_by_id(self, activity_id: int, parent: tk.Misc) -> None:
+        if self._busy:
+            messagebox.showinfo("任务运行中", "请等待当前任务完成。", parent=parent)
+            return
+
+        activity = self._load_activity(activity_id)
+        if activity is None:
+            messagebox.showinfo("活动不存在", "该活动可能已经被删除，请刷新后重试。", parent=parent)
+            self.refresh()
+            return
+
+        confirmed = messagebox.askyesno(
+            "确认删除活动",
+            (
+                f"确定删除这条本地活动记录吗？\n\n"
+                f"{activity.get('start_time')}  {activity.get('activity_name')}\n\n"
+                "关联的主观记录也会删除；原始 FIT 文件会保留。"
+            ),
+            parent=parent,
+        )
+        if not confirmed:
+            return
+
+        with self._database.connect() as connection:
+            deleted = ActivityRepository(connection).delete(activity_id)
+            connection.commit()
+
+        if deleted:
+            self._append_log(f"已删除活动：{activity.get('start_time')} {activity.get('activity_name')}")
+        else:
+            self._append_log(f"删除活动失败：未找到 ID {activity_id}")
+
+        if isinstance(parent, tk.Toplevel):
+            parent.destroy()
+        self.refresh()
 
     def prompt_notes(self) -> None:
         if self._busy:
@@ -422,6 +721,13 @@ class DiaryDesktopApp:
         for row in rows:
             tree.insert("", "end", values=row)
 
+    def _replace_activity_rows(self, tree: ttk.Treeview, rows: list[tuple[Any, ...]]) -> None:
+        for item_id in tree.get_children():
+            tree.delete(item_id)
+        for row in rows:
+            activity_id, *values = row
+            tree.insert("", "end", iid=str(activity_id), values=values)
+
     def _append_log(self, message: str) -> None:
         self._log.configure(state="normal")
         self._log.insert("end", f"{message}\n")
@@ -444,6 +750,12 @@ def _km(value: object) -> str:
     if value is None:
         return "未知"
     return f"{float(value) / 1000:.2f} km"
+
+
+def _meters(value: object) -> str:
+    if value is None:
+        return "未知"
+    return f"{float(value):.1f} m"
 
 
 def _duration(value: object) -> str:
@@ -475,3 +787,17 @@ def _single_line(value: object) -> str:
     if value is None:
         return ""
     return " ".join(str(value).splitlines())
+
+
+def _detail_value(value: object) -> str:
+    if value is None:
+        return "未知"
+    text = str(value).strip()
+    return text or "无"
+
+
+def _read_date_text(value: str, label: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{label}需要使用 YYYY-MM-DD 格式。") from exc
