@@ -1,0 +1,30 @@
+[project]
+name = "exe-diary"
+version = "0.1.0"
+description = "A local running training diary that syncs Garmin FIT files and records subjective notes."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "garth",
+]
+
+[project.optional-dependencies]
+fit = [
+  "fitparse",
+]
+gui = [
+  "PySide6",
+]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+exe-diary = "exe_diary.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
