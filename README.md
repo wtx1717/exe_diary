@@ -79,7 +79,10 @@ EXE_DIARY_LOG_DIR=logs
 ```bash
 exe-diary init-db
 exe-diary sync-today
+exe-diary sync-today --limit 1
 exe-diary sync-range --from-date 2026-06-01 --to-date 2026-06-02
+exe-diary sync-range --from-date 2026-06-01 --to-date 2026-06-02 --limit 2
+exe-diary sync-latest --limit 2
 exe-diary pending-notes
 ```
 
@@ -102,4 +105,3 @@ python -m exe_diary.main init-db
 3. 实现弹窗问卷 UI。
 4. 配置 Windows 计划任务。
 5. 增加历史记录和基础统计视图。
-

@@ -17,11 +17,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="initialize the local SQLite database")
-    subparsers.add_parser("sync-today", help="sync today's Garmin running activities")
+    sync_today = subparsers.add_parser("sync-today", help="sync today's Garmin running activities")
+    sync_today.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
 
     sync_range = subparsers.add_parser("sync-range", help="manually sync a date range")
     sync_range.add_argument("--from-date", required=True, type=_date_arg)
     sync_range.add_argument("--to-date", required=True, type=_date_arg)
+    sync_range.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
+
+    sync_latest = subparsers.add_parser("sync-latest", help="sync the latest Garmin running activities for local testing")
+    sync_latest.add_argument("--limit", type=int, default=2, help="maximum number of running activities to process")
 
     subparsers.add_parser("pending-notes", help="list activities that still need subjective notes")
     return parser
@@ -40,12 +45,17 @@ def main() -> None:
     workflow = AppWorkflow(settings, database)
 
     if args.command == "sync-today":
-        result = workflow.sync_today()
+        result = workflow.sync_today(max_activities=args.limit)
         print(result.summary_text())
         return
 
     if args.command == "sync-range":
-        result = workflow.sync_range(args.from_date, args.to_date)
+        result = workflow.sync_range(args.from_date, args.to_date, max_activities=args.limit)
+        print(result.summary_text())
+        return
+
+    if args.command == "sync-latest":
+        result = workflow.sync_latest(max_activities=args.limit)
         print(result.summary_text())
         return
 
@@ -57,4 +67,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

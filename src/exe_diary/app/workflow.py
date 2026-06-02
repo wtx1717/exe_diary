@@ -15,11 +15,22 @@ class AppWorkflow:
         self._settings = settings
         self._database = database
 
-    def sync_today(self) -> SyncResult:
+    def sync_today(self, max_activities: int | None = None) -> SyncResult:
         today = date.today()
-        return self.sync_range(today, today)
+        return self.sync_range(today, today, max_activities=max_activities)
 
-    def sync_range(self, from_date: date, to_date: date) -> SyncResult:
+    def sync_range(self, from_date: date, to_date: date, max_activities: int | None = None) -> SyncResult:
+        return self._run_sync(from_date=from_date, to_date=to_date, max_activities=max_activities)
+
+    def sync_latest(self, max_activities: int = 2) -> SyncResult:
+        return self._run_sync(from_date=None, to_date=None, max_activities=max_activities)
+
+    def _run_sync(
+        self,
+        from_date: date | None,
+        to_date: date | None,
+        max_activities: int | None,
+    ) -> SyncResult:
         self._database.initialize()
         with self._database.connect() as connection:
             activity_repo = ActivityRepository(connection)
@@ -33,7 +44,7 @@ class AppWorkflow:
             )
 
             try:
-                result = service.sync_range(from_date, to_date)
+                result = service.sync_range(from_date, to_date, max_activities=max_activities)
             except Exception as exc:
                 sync_repo.finish(
                     run_id,

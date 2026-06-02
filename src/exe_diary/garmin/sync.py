@@ -18,15 +18,19 @@ class SyncResult:
     imported_count: int
     skipped_count: int
     error_count: int
+    errors: tuple[str, ...] = ()
 
     def summary_text(self) -> str:
-        return (
+        text = (
             "sync finished: "
             f"downloaded={self.downloaded_count}, "
             f"imported={self.imported_count}, "
             f"skipped={self.skipped_count}, "
             f"errors={self.error_count}"
         )
+        if self.errors:
+            text += "\n" + "\n".join(f"- {error}" for error in self.errors)
+        return text
 
 
 class GarminSyncService:
@@ -42,11 +46,18 @@ class GarminSyncService:
         self._activities = activities
         self._fit_raw_dir = fit_raw_dir
 
-    def sync_range(self, from_date: date, to_date: date) -> SyncResult:
+    def sync_range(
+        self,
+        from_date: date | None,
+        to_date: date | None,
+        max_activities: int | None = None,
+    ) -> SyncResult:
         downloaded_count = 0
         imported_count = 0
         skipped_count = 0
         error_count = 0
+        processed_running_count = 0
+        errors: list[str] = []
 
         for raw_activity in self._client.iter_activities():
             start_time = _parse_garmin_start_time(raw_activity)
@@ -55,13 +66,17 @@ class GarminSyncService:
                 continue
 
             activity_date = start_time.date()
-            if activity_date > to_date:
+            if to_date is not None and activity_date > to_date:
                 continue
-            if activity_date < from_date:
+            if from_date is not None and activity_date < from_date:
                 break
             if not _is_running_activity(raw_activity):
                 skipped_count += 1
                 continue
+
+            if max_activities is not None and processed_running_count >= max_activities:
+                break
+            processed_running_count += 1
 
             activity_id = str(raw_activity["activityId"])
             local_id = f"{activity_date:%Y%m%d}_{activity_id}"
@@ -89,14 +104,16 @@ class GarminSyncService:
                     imported_count += 1
                 else:
                     skipped_count += 1
-            except Exception:
+            except Exception as exc:
                 error_count += 1
+                errors.append(f"{local_id}: {exc}")
 
         return SyncResult(
             downloaded_count=downloaded_count,
             imported_count=imported_count,
             skipped_count=skipped_count,
             error_count=error_count,
+            errors=tuple(errors),
         )
 
     def _fit_path(self, activity_date: date, local_id: str) -> Path:
