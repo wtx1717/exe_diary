@@ -13,8 +13,9 @@ from tkinter.scrolledtext import ScrolledText
 import traceback
 from typing import Any, TypeVar
 
+from exe_diary.app.scheduler import install_daily_start_task, remove_daily_start_task
 from exe_diary.app.workflow import AppWorkflow, FitBackfillResult, FitCleanupResult
-from exe_diary.config import Settings, load_settings
+from exe_diary.config import Settings, load_settings, normalize_daily_time, save_auto_run_settings
 from exe_diary.db.database import Database
 from exe_diary.db.repositories import ActivityNoteRepository, ActivityRepository, SyncRunRepository
 from exe_diary.garmin.sync import SyncResult
@@ -26,7 +27,14 @@ _T = TypeVar("_T")
 
 
 class DiaryDesktopApp:
-    def __init__(self, root: tk.Tk, settings: Settings, database: Database) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        settings: Settings,
+        database: Database,
+        *,
+        start_scheduled_flow: bool = False,
+    ) -> None:
         self._root = root
         self._settings = settings
         self._database = database
@@ -41,10 +49,15 @@ class DiaryDesktopApp:
         self._view_start_var = tk.StringVar(value=date.today().isoformat())
         self._view_end_var = tk.StringVar(value=date.today().isoformat())
         self._status_var = tk.StringVar(value="就绪")
+        self._auto_run_enabled_var = tk.BooleanVar(value=settings.auto_run_enabled)
+        self._auto_run_time_var = tk.StringVar(value=settings.auto_run_time)
+        self._auto_run_status_var = tk.StringVar(value="")
         self._active_activity_tree: ttk.Treeview | None = None
 
         self._build()
         self._root.after(100, self._drain_events)
+        if start_scheduled_flow:
+            self._root.after(500, self._run_scheduled_daily_flow)
         self.refresh()
 
     def _build(self) -> None:
@@ -139,11 +152,47 @@ class DiaryDesktopApp:
         ttk.Label(settings, text="活动上限").grid(row=2, column=0, sticky="w", pady=4)
         ttk.Entry(settings, textvariable=self._limit_var, width=14).grid(row=2, column=1, sticky="ew", pady=4)
 
+        self._build_schedule_settings(parent)
+
         paths = ttk.LabelFrame(parent, text="路径", padding=10)
-        paths.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        paths.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         paths.columnconfigure(0, weight=1)
         ttk.Label(paths, text=f"数据库：{self._settings.db_path}", wraplength=250).grid(row=0, column=0, sticky="w")
         ttk.Label(paths, text=f"FIT：{self._settings.fit_raw_dir}", wraplength=250).grid(row=1, column=0, sticky="w")
+
+    def _build_schedule_settings(self, parent: ttk.Frame) -> None:
+        schedule = ttk.LabelFrame(parent, text="每日自动运行", padding=10)
+        schedule.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        schedule.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(schedule, text="启用", variable=self._auto_run_enabled_var).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Label(schedule, text="时间").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(schedule, textvariable=self._auto_run_time_var, width=14).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            pady=4,
+        )
+        ttk.Button(schedule, text="保存设置", command=self._save_auto_run_settings).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 4),
+        )
+        ttk.Label(schedule, textvariable=self._auto_run_status_var, wraplength=250).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(2, 0),
+        )
 
     def _build_tables(self, parent: ttk.Frame) -> None:
         notebook = ttk.Notebook(parent)
@@ -1059,8 +1108,66 @@ class DiaryDesktopApp:
         self._run_background(
             "同步今天并补填",
             lambda: self._workflow.sync_today(max_activities=limit),
-            on_success=lambda _: self.prompt_notes(),
+            on_success=lambda _: self._prompt_notes_then_show_main(),
         )
+
+    def _save_auto_run_settings(self) -> None:
+        try:
+            run_time = normalize_daily_time(self._auto_run_time_var.get())
+        except ValueError as exc:
+            messagebox.showerror("定时设置错误", str(exc), parent=self._root)
+            return
+
+        enabled = self._auto_run_enabled_var.get()
+        scheduler_result = install_daily_start_task(run_time) if enabled else remove_daily_start_task()
+        if not scheduler_result.success:
+            status_text = f"计划任务设置失败：{scheduler_result.message}"
+            self._auto_run_status_var.set(status_text)
+            self._append_log(status_text)
+            messagebox.showwarning("计划任务设置失败", scheduler_result.message, parent=self._root)
+            return
+
+        try:
+            env_path = save_auto_run_settings(enabled, run_time)
+        except Exception as exc:
+            messagebox.showerror("保存失败", f"写入 .env 失败：{exc}", parent=self._root)
+            return
+
+        self._auto_run_time_var.set(run_time)
+        status_text = f"已保存到 {env_path.name}：{'启用' if enabled else '停用'} {run_time}"
+        status_text = f"{status_text}；{scheduler_result.message}"
+        self._auto_run_status_var.set(status_text)
+        self._append_log(status_text)
+
+    def _run_scheduled_daily_flow(self) -> None:
+        self._show_main_window()
+        self._append_log(f"每日自动运行触发：{self._auto_run_time_var.get().strip()}")
+        self._run_background(
+            "每日自动运行",
+            lambda: self._workflow.sync_today(max_activities=None),
+            on_success=lambda _: self._prompt_notes_then_show_main(),
+        )
+
+    def _prompt_notes_then_show_main(self) -> None:
+        self.prompt_notes()
+        self._show_main_window()
+
+    def _show_main_window(self) -> None:
+        try:
+            self._root.deiconify()
+            self._root.state("normal")
+            self._root.lift()
+            self._root.focus_force()
+            self._root.attributes("-topmost", True)
+            self._root.after(800, self._disable_main_window_topmost)
+        except tk.TclError:
+            return
+
+    def _disable_main_window_topmost(self) -> None:
+        try:
+            self._root.attributes("-topmost", False)
+        except tk.TclError:
+            return
 
     def _backfill_fit_details(self) -> None:
         self._run_background(
@@ -1198,11 +1305,11 @@ class DiaryDesktopApp:
         self._status_var.set(message)
 
 
-def main() -> None:
+def main(*, start_scheduled_flow: bool = False) -> None:
     settings = load_settings()
     database = Database(settings.db_path)
     root = tk.Tk()
-    DiaryDesktopApp(root, settings, database)
+    DiaryDesktopApp(root, settings, database, start_scheduled_flow=start_scheduled_flow)
     root.mainloop()
 
 

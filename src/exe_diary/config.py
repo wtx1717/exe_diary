@@ -33,6 +33,8 @@ class Settings:
     garmin_email: str | None
     garmin_password: str | None
     garmin_is_cn_account: bool
+    auto_run_enabled: bool
+    auto_run_time: str
     data_dir: Path
     db_path: Path
     log_dir: Path
@@ -55,6 +57,72 @@ def _path_from_env(name: str, default: Path, base_dir: Path) -> Path:
     return path.resolve()
 
 
+def normalize_daily_time(value: str) -> str:
+    text = value.strip()
+    parts = text.split(":")
+    if len(parts) != 2:
+        raise ValueError("每日自动运行时间需要使用 HH:MM 格式。")
+
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("每日自动运行时间需要使用 HH:MM 格式。") from exc
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("每日自动运行时间需要在 00:00-23:59 之间。")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _daily_time_from_env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return normalize_daily_time(value)
+    except ValueError:
+        return default
+
+
+def save_auto_run_settings(enabled: bool, run_time: str) -> Path:
+    normalized_time = normalize_daily_time(run_time)
+    values = {
+        "EXE_DIARY_AUTO_RUN_ENABLED": "true" if enabled else "false",
+        "EXE_DIARY_AUTO_RUN_TIME": normalized_time,
+    }
+    env_path = _app_dir() / ".env"
+    _write_dotenv_values(env_path, values)
+    os.environ.update(values)
+    return env_path
+
+
+def _write_dotenv_values(path: Path, values: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    output: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+
+        key = line.split("=", 1)[0].strip()
+        if key in values:
+            output.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            output.append(line)
+
+    if output and output[-1].strip():
+        output.append("")
+    for key, value in values.items():
+        if key not in seen:
+            output.append(f"{key}={value}")
+
+    path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+
+
 def load_settings() -> Settings:
     app_dir = _app_dir()
     cwd_env = Path(".env").resolve()
@@ -73,6 +141,8 @@ def load_settings() -> Settings:
         garmin_email=os.getenv("GARMIN_EMAIL"),
         garmin_password=os.getenv("GARMIN_PASSWORD"),
         garmin_is_cn_account=_bool_from_env("GARMIN_IS_CN_ACCOUNT", True),
+        auto_run_enabled=_bool_from_env("EXE_DIARY_AUTO_RUN_ENABLED", False),
+        auto_run_time=_daily_time_from_env("EXE_DIARY_AUTO_RUN_TIME", "20:30"),
         data_dir=data_dir,
         db_path=db_path,
         log_dir=log_dir,

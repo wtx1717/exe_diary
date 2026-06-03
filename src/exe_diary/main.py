@@ -38,19 +38,53 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--limit", type=int, default=None, help="maximum number of activities to backfill")
     subparsers.add_parser("cleanup-orphan-fit", help="delete FIT files that are not referenced by the database")
     subparsers.add_parser("gui", help="open the desktop visual interface")
+    subparsers.add_parser(
+        "scheduled-run",
+        help="open the desktop interface and run the daily sync-note workflow immediately",
+    )
+    install_schedule = subparsers.add_parser(
+        "install-daily-schedule",
+        help="create or update the Windows daily startup task",
+    )
+    install_schedule.add_argument("--time", default=None, help="daily startup time in HH:MM format")
+    subparsers.add_parser("remove-daily-schedule", help="delete the Windows daily startup task")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
 
-    if args.command == "gui":
+    if args.command in {"gui", "scheduled-run"}:
         from exe_diary.ui.app import main as gui_main
 
-        gui_main()
+        gui_main(start_scheduled_flow=args.command == "scheduled-run")
         return
 
     settings = load_settings()
+
+    if args.command == "install-daily-schedule":
+        from exe_diary.app.scheduler import install_daily_start_task
+        from exe_diary.config import save_auto_run_settings
+
+        run_time = args.time or settings.auto_run_time
+        save_auto_run_settings(True, run_time)
+        result = install_daily_start_task(run_time)
+        print(result.message)
+        if not result.success:
+            raise SystemExit(1)
+        return
+
+    if args.command == "remove-daily-schedule":
+        from exe_diary.app.scheduler import remove_daily_start_task
+        from exe_diary.config import save_auto_run_settings
+
+        save_auto_run_settings(False, settings.auto_run_time)
+        result = remove_daily_start_task()
+        print(result.message)
+        if not result.success:
+            raise SystemExit(1)
+        return
+
     database = Database(settings.db_path)
 
     if args.command == "init-db":

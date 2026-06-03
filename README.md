@@ -38,9 +38,13 @@ GARMIN_IS_CN_ACCOUNT=true
 EXE_DIARY_DATA_DIR=data
 EXE_DIARY_DB_PATH=data/exe_diary.sqlite
 EXE_DIARY_LOG_DIR=logs
+
+EXE_DIARY_AUTO_RUN_ENABLED=false
+EXE_DIARY_AUTO_RUN_TIME=20:30
 ```
 
 相对路径会按项目目录解析。例如上面的配置会把数据库写到 `D:\Project\exe_diary\data\exe_diary.sqlite`。
+`EXE_DIARY_AUTO_RUN_TIME` 使用 24 小时制 `HH:MM` 格式。桌面界面保存“每日自动运行”设置时，会同步写入 `.env` 并创建或删除 Windows 计划任务。到点后软件会自动启动并执行“同步今天 -> 补填问卷”，问卷结束后会把主界面弹到前台。外部调度器也可以直接调用 `exe-diary scheduled-run`，用于立刻执行同一流程。
 
 ## 安装
 
@@ -76,6 +80,7 @@ python -m exe_diary.main gui
 - 初始化数据库。
 - 同步今天、最近活动或指定日期范围。
 - 同步今天并继续弹窗补填主观记录。
+- 每日自动运行设置，可保存到 `.env`，也可直接通过环境变量外部配置。
 - 查看最近活动、待补填活动和同步记录。
 
 ## 命令行入口
@@ -92,6 +97,9 @@ exe-diary sync-latest --limit 2
 exe-diary pending-notes
 exe-diary prompt-notes
 exe-diary gui
+exe-diary scheduled-run
+exe-diary install-daily-schedule --time 20:30
+exe-diary remove-daily-schedule
 ```
 
 开发阶段也可以使用：
