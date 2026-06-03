@@ -87,6 +87,19 @@ class ActivityRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_all(self) -> list[dict]:
+        rows = self._connection.execute(
+            """
+            SELECT
+              a.*,
+              CASE WHEN n.id IS NULL THEN 0 ELSE 1 END AS has_note
+            FROM activities a
+            LEFT JOIN activity_notes n ON n.activity_id = a.id
+            ORDER BY a.start_time DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_recent(self, limit: int = 50) -> list[dict]:
         rows = self._connection.execute(
             """

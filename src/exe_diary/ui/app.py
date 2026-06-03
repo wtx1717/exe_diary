@@ -37,7 +37,7 @@ class DiaryDesktopApp:
         self._limit_var = tk.StringVar(value="")
         self._from_date_var = tk.StringVar(value=date.today().isoformat())
         self._to_date_var = tk.StringVar(value=date.today().isoformat())
-        self._view_mode_var = tk.StringVar(value="day")
+        self._view_mode_var = tk.StringVar(value="all")
         self._view_start_var = tk.StringVar(value=date.today().isoformat())
         self._view_end_var = tk.StringVar(value=date.today().isoformat())
         self._status_var = tk.StringVar(value="就绪")
@@ -235,10 +235,10 @@ class DiaryDesktopApp:
     def _build_activity_view_controls(self, parent: ttk.Frame) -> None:
         controls = ttk.Frame(parent)
         controls.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        controls.columnconfigure(8, weight=1)
+        controls.columnconfigure(9, weight=1)
 
         ttk.Label(controls, text="视角").grid(row=0, column=0, sticky="w", padx=(0, 4))
-        view_options = (("日", "day"), ("周", "week"), ("月", "month"), ("自定义", "custom"))
+        view_options = (("全部", "all"), ("日", "day"), ("周", "week"), ("月", "month"), ("自定义", "custom"))
         for index, (label, value) in enumerate(view_options, start=1):
             ttk.Radiobutton(
                 controls,
@@ -248,15 +248,15 @@ class DiaryDesktopApp:
                 command=self._apply_activity_view,
             ).grid(row=0, column=index, sticky="w", padx=2)
 
-        ttk.Label(controls, text="开始").grid(row=0, column=5, sticky="e", padx=(14, 4))
-        ttk.Entry(controls, textvariable=self._view_start_var, width=12).grid(row=0, column=6, sticky="w")
-        ttk.Label(controls, text="结束").grid(row=0, column=7, sticky="e", padx=(10, 4))
-        ttk.Entry(controls, textvariable=self._view_end_var, width=12).grid(row=0, column=8, sticky="w")
+        ttk.Label(controls, text="开始").grid(row=0, column=6, sticky="e", padx=(14, 4))
+        ttk.Entry(controls, textvariable=self._view_start_var, width=12).grid(row=0, column=7, sticky="w")
+        ttk.Label(controls, text="结束").grid(row=0, column=8, sticky="e", padx=(10, 4))
+        ttk.Entry(controls, textvariable=self._view_end_var, width=12).grid(row=0, column=9, sticky="w")
 
-        ttk.Button(controls, text="应用", command=self._apply_activity_view).grid(row=0, column=9, padx=(10, 0))
-        ttk.Button(controls, text="今天", command=self._show_today).grid(row=0, column=10, padx=(6, 0))
-        ttk.Button(controls, text="详情", command=self._show_selected_activity_detail).grid(row=0, column=11, padx=(14, 0))
-        ttk.Button(controls, text="删除", command=self._delete_selected_activity).grid(row=0, column=12, padx=(6, 0))
+        ttk.Button(controls, text="应用", command=self._apply_activity_view).grid(row=0, column=10, padx=(10, 0))
+        ttk.Button(controls, text="今天", command=self._show_today).grid(row=0, column=11, padx=(6, 0))
+        ttk.Button(controls, text="详情", command=self._show_selected_activity_detail).grid(row=0, column=12, padx=(14, 0))
+        ttk.Button(controls, text="删除", command=self._delete_selected_activity).grid(row=0, column=13, padx=(6, 0))
 
     def _bind_activity_tree(self, tree: ttk.Treeview) -> None:
         tree.bind("<<TreeviewSelect>>", lambda _event, selected_tree=tree: self._remember_activity_tree(selected_tree))
@@ -280,8 +280,12 @@ class DiaryDesktopApp:
             from_date, to_date = self._activity_view_dates()
             self._database.initialize()
             with self._database.connect() as connection:
-                activities = ActivityRepository(connection).list_between(from_date.isoformat(), to_date.isoformat())
-                pending = ActivityRepository(connection).list_without_notes()
+                activity_repository = ActivityRepository(connection)
+                if from_date is None or to_date is None:
+                    activities = activity_repository.list_all()
+                else:
+                    activities = activity_repository.list_between(from_date.isoformat(), to_date.isoformat())
+                pending = activity_repository.list_without_notes()
                 sync_runs = SyncRunRepository(connection).list_recent(limit=30)
         except Exception as exc:
             self._set_status(f"刷新失败：{exc}")
@@ -335,12 +339,16 @@ class DiaryDesktopApp:
             ],
         )
         self._set_status(
-            f"就绪：{self._activity_view_label()} {from_date.isoformat()} 至 {to_date.isoformat()} "
+            f"就绪：{self._activity_view_status_text(from_date, to_date)} "
             f"{len(activities)} 条，待补填 {len(pending)}"
         )
 
-    def _activity_view_dates(self) -> tuple[date, date]:
+    def _activity_view_dates(self) -> tuple[date | None, date | None]:
         mode = self._view_mode_var.get()
+
+        if mode == "all":
+            return None, None
+
         anchor = _read_date_text(self._view_start_var.get(), "开始日期")
 
         if mode == "day":
@@ -370,11 +378,17 @@ class DiaryDesktopApp:
 
     def _activity_view_label(self) -> str:
         return {
+            "all": "全部视角",
             "day": "日视角",
             "week": "周视角",
             "month": "月视角",
             "custom": "自定义视角",
         }.get(self._view_mode_var.get(), "活动")
+
+    def _activity_view_status_text(self, from_date: date | None, to_date: date | None) -> str:
+        if from_date is None or to_date is None:
+            return self._activity_view_label()
+        return f"{self._activity_view_label()} {from_date.isoformat()} 至 {to_date.isoformat()}"
 
     def _apply_activity_view(self) -> None:
         self.refresh()
