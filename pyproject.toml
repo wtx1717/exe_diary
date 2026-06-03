@@ -6,10 +6,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "garth",
+  "garmin-fit-sdk",
+  "fitparse",
 ]
 
 [project.optional-dependencies]
 fit = [
+  "garmin-fit-sdk",
   "fitparse",
 ]
 gui = [

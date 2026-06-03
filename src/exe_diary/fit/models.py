@@ -7,6 +7,58 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class FitRecordPoint:
+    timestamp: datetime | None = None
+    elapsed_s: float | None = None
+    distance_m: float | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    altitude_m: float | None = None
+    speed_mps: float | None = None
+    pace_s_per_km: float | None = None
+    heart_rate: int | None = None
+    cadence_spm: float | None = None
+    stride_m: float | None = None
+    power_w: int | None = None
+    temperature_c: int | None = None
+
+
+@dataclass(frozen=True)
+class FitLap:
+    index: int
+    start_time: datetime | None = None
+    elapsed_s: float | None = None
+    moving_time_s: float | None = None
+    distance_m: float | None = None
+    avg_pace_s_per_km: float | None = None
+    avg_hr: int | None = None
+    max_hr: int | None = None
+    avg_cadence_spm: float | None = None
+    max_cadence_spm: float | None = None
+    avg_stride_m: float | None = None
+    ascent_m: float | None = None
+    descent_m: float | None = None
+    calories: int | None = None
+    trigger: str | None = None
+    intensity: str | None = None
+
+
+@dataclass(frozen=True)
+class FitRawField:
+    name: str
+    value: Any
+    units: str | None = None
+
+
+@dataclass(frozen=True)
+class FitRawMessage:
+    message_index: int
+    message_name: str
+    local_index: int
+    fields: tuple[FitRawField, ...] = ()
+
+
+@dataclass(frozen=True)
 class ParsedFitMetrics:
     distance_m: float | None = None
     duration_s: float | None = None
@@ -14,9 +66,13 @@ class ParsedFitMetrics:
     avg_hr: int | None = None
     max_hr: int | None = None
     avg_cadence: float | None = None
+    avg_stride_m: float | None = None
     elevation_gain_m: float | None = None
     calories: int | None = None
     training_effect: float | None = None
+    records: tuple[FitRecordPoint, ...] = ()
+    laps: tuple[FitLap, ...] = ()
+    raw_messages: tuple[FitRawMessage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -37,9 +93,13 @@ class ActivitySummary:
     avg_hr: int | None
     max_hr: int | None
     avg_cadence: float | None
+    avg_stride_m: float | None
     elevation_gain_m: float | None
     calories: int | None
     training_effect: float | None
+    records: tuple[FitRecordPoint, ...] = ()
+    laps: tuple[FitLap, ...] = ()
+    raw_messages: tuple[FitRawMessage, ...] = ()
 
     @classmethod
     def from_garmin_activity(
@@ -76,9 +136,13 @@ class ActivitySummary:
             avg_hr=parsed_metrics.avg_hr or _integer(raw_activity.get("averageHR")),
             max_hr=parsed_metrics.max_hr or _integer(raw_activity.get("maxHR")),
             avg_cadence=parsed_metrics.avg_cadence or _number(raw_activity.get("averageRunningCadenceInStepsPerMinute")),
+            avg_stride_m=parsed_metrics.avg_stride_m,
             elevation_gain_m=parsed_metrics.elevation_gain_m or _number(raw_activity.get("elevationGain")),
             calories=parsed_metrics.calories or _integer(raw_activity.get("calories")),
             training_effect=parsed_metrics.training_effect or _number(raw_activity.get("aerobicTrainingEffect")),
+            records=parsed_metrics.records,
+            laps=parsed_metrics.laps,
+            raw_messages=parsed_metrics.raw_messages,
         )
 
 
@@ -101,4 +165,3 @@ def _integer(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
-

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, timedelta
+import json
+import math
+from pathlib import Path
 import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 import traceback
-from typing import Any
+from typing import Any, TypeVar
 
-from exe_diary.app.workflow import AppWorkflow
+from exe_diary.app.workflow import AppWorkflow, FitBackfillResult, FitCleanupResult
 from exe_diary.config import Settings, load_settings
 from exe_diary.db.database import Database
 from exe_diary.db.repositories import ActivityNoteRepository, ActivityRepository, SyncRunRepository
@@ -19,6 +22,7 @@ from exe_diary.ui.prompt import PromptService
 
 
 Event = tuple[str, str, Any, Callable[[Any], None] | None]
+_T = TypeVar("_T")
 
 
 class DiaryDesktopApp:
@@ -101,13 +105,25 @@ class DiaryDesktopApp:
             sticky="ew",
             pady=(10, 3),
         )
-        ttk.Button(actions, text="删除选中活动", command=self._delete_selected_activity).grid(
+        ttk.Button(actions, text="回填 FIT 明细", command=self._backfill_fit_details).grid(
             row=7,
             column=0,
             sticky="ew",
             pady=3,
         )
-        ttk.Button(actions, text="刷新", command=self.refresh).grid(row=8, column=0, sticky="ew", pady=(10, 3))
+        ttk.Button(actions, text="清理孤立 FIT", command=self._cleanup_orphan_fit_files).grid(
+            row=8,
+            column=0,
+            sticky="ew",
+            pady=3,
+        )
+        ttk.Button(actions, text="删除选中活动", command=self._delete_selected_activity).grid(
+            row=9,
+            column=0,
+            sticky="ew",
+            pady=3,
+        )
+        ttk.Button(actions, text="刷新", command=self.refresh).grid(row=10, column=0, sticky="ew", pady=(10, 3))
 
     def _build_settings(self, parent: ttk.Frame) -> None:
         settings = ttk.LabelFrame(parent, text="同步参数", padding=10)
@@ -257,7 +273,7 @@ class DiaryDesktopApp:
     def _configure_tree(self, tree: ttk.Treeview, columns: dict[str, tuple[str, int]]) -> None:
         for key, (heading, width) in columns.items():
             tree.heading(key, text=heading)
-            tree.column(key, width=width, minwidth=60, anchor="w", stretch=key in {"name", "message"})
+            tree.column(key, width=width, minwidth=60, anchor="w", stretch=key in {"name", "message", "value"})
 
     def refresh(self) -> None:
         try:
@@ -408,13 +424,19 @@ class DiaryDesktopApp:
     def _load_activity(self, activity_id: int) -> dict | None:
         self._database.initialize()
         with self._database.connect() as connection:
-            return ActivityRepository(connection).get_with_note(activity_id)
+            repository = ActivityRepository(connection)
+            return repository.get_detail(activity_id)
+
+    def _load_fit_messages(self, activity_id: int) -> list[dict]:
+        self._database.initialize()
+        with self._database.connect() as connection:
+            return ActivityRepository(connection).list_fit_messages(activity_id)
 
     def _open_activity_detail(self, activity: dict) -> None:
         window = tk.Toplevel(self._root)
         window.title("活动详情")
-        window.geometry("660x620")
-        window.minsize(560, 480)
+        window.geometry("980x760")
+        window.minsize(780, 620)
         window.transient(self._root)
 
         root = ttk.Frame(window, padding=14)
@@ -458,13 +480,21 @@ class DiaryDesktopApp:
                 ("平均配速", _pace(activity.get("avg_pace_s_per_km"))),
                 ("平均心率", _value(activity.get("avg_hr"))),
                 ("最高心率", _value(activity.get("max_hr"))),
-                ("平均步频", _value(activity.get("avg_cadence"))),
+                ("平均步频", _cadence(activity.get("avg_cadence"))),
+                ("平均步幅", _stride(activity.get("avg_stride_m"))),
                 ("爬升", _meters(activity.get("elevation_gain_m"))),
                 ("卡路里", _value(activity.get("calories"))),
                 ("训练效果", _value(activity.get("training_effect"))),
             ],
         )
         notebook.add(metrics, text="运动指标")
+
+        records = activity.get("records") or []
+        laps = activity.get("laps") or []
+        self._add_track_tab(notebook, records)
+        self._add_charts_tab(notebook, records)
+        self._add_laps_tab(notebook, laps)
+        self._add_fit_messages_tab(notebook, int(activity["id"]))
 
         note = ttk.Frame(notebook, padding=12)
         note.columnconfigure(1, weight=1)
@@ -509,6 +539,376 @@ class DiaryDesktopApp:
         ).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="关闭", command=window.destroy).grid(row=0, column=1)
 
+    def _add_track_tab(self, notebook: ttk.Notebook, records: list[dict]) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(tab, background="white", highlightthickness=1, highlightbackground="#d9d9d9")
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        points = [
+            (float(record["latitude"]), float(record["longitude"]))
+            for record in records
+            if record.get("latitude") is not None and record.get("longitude") is not None
+        ]
+
+        def redraw(_event: tk.Event | None = None) -> None:
+            self._draw_track(canvas, points)
+
+        canvas.bind("<Configure>", redraw)
+        redraw()
+        notebook.add(tab, text="轨迹")
+
+    def _add_charts_tab(self, notebook: ttk.Notebook, records: list[dict]) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        tab.columnconfigure(0, weight=1)
+
+        chart_specs = [
+            ("心率", "heart_rate", _heart_rate, "#d14b4b", False),
+            ("配速（快在上）", "pace_s_per_km", _pace, "#3777b8", True),
+            ("步频", "cadence_spm", _cadence, "#3b8f5a", False),
+            ("步幅", "stride_m", _stride, "#8a5fbf", False),
+        ]
+
+        for row, (title, field, formatter, color, invert) in enumerate(chart_specs):
+            tab.rowconfigure(row, weight=1)
+            frame = ttk.LabelFrame(tab, text=title, padding=8)
+            frame.grid(row=row, column=0, sticky="nsew", pady=(0, 8))
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+            canvas = tk.Canvas(frame, height=122, background="white", highlightthickness=0)
+            canvas.grid(row=0, column=0, sticky="nsew")
+
+            def redraw(
+                _event: tk.Event | None = None,
+                chart_canvas: tk.Canvas = canvas,
+                chart_field: str = field,
+                chart_formatter: Callable[[object], str] = formatter,
+                chart_color: str = color,
+                chart_invert: bool = invert,
+            ) -> None:
+                self._draw_series_chart(
+                    chart_canvas,
+                    records,
+                    chart_field,
+                    chart_formatter,
+                    chart_color,
+                    invert=chart_invert,
+                )
+
+            canvas.bind("<Configure>", redraw)
+            redraw()
+
+        notebook.add(tab, text="曲线")
+
+    def _add_laps_tab(self, notebook: ttk.Notebook, laps: list[dict]) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        columns = ("index", "distance", "time", "pace", "hr", "cadence", "stride", "trigger", "intensity")
+        tree = ttk.Treeview(tab, columns=columns, show="headings", height=12)
+        self._configure_tree(
+            tree,
+            {
+                "index": ("圈", 50),
+                "distance": ("距离", 80),
+                "time": ("用时", 80),
+                "pace": ("配速", 90),
+                "hr": ("心率", 80),
+                "cadence": ("步频", 80),
+                "stride": ("步幅", 80),
+                "trigger": ("触发", 90),
+                "intensity": ("强度", 90),
+            },
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        for lap in laps:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    lap.get("lap_index"),
+                    _km(lap.get("distance_m")),
+                    _duration(lap.get("moving_time_s") or lap.get("elapsed_s")),
+                    _pace(lap.get("avg_pace_s_per_km")),
+                    _hr_range(lap.get("avg_hr"), lap.get("max_hr")),
+                    _cadence(lap.get("avg_cadence_spm")),
+                    _stride(lap.get("avg_stride_m")),
+                    _value(lap.get("trigger")),
+                    _value(lap.get("intensity")),
+                ),
+            )
+
+        if not laps:
+            ttk.Label(tab, text="没有计圈数据。").grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        notebook.add(tab, text="计圈")
+
+    def _add_fit_messages_tab(self, notebook: ttk.Notebook, activity_id: int) -> None:
+        tab = ttk.Frame(notebook, padding=12)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+
+        summary_var = tk.StringVar(value="FIT 原始数据未加载")
+        ttk.Label(tab, textvariable=summary_var).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        paned = ttk.PanedWindow(tab, orient="horizontal")
+        paned.grid(row=1, column=0, sticky="nsew")
+
+        type_frame = ttk.Frame(paned)
+        type_frame.columnconfigure(0, weight=1)
+        type_frame.rowconfigure(0, weight=1)
+        type_tree = ttk.Treeview(type_frame, columns=("name", "count"), show="headings", height=18)
+        self._configure_tree(type_tree, {"name": ("类型", 150), "count": ("数量", 70)})
+        type_tree.grid(row=0, column=0, sticky="nsew")
+        type_scrollbar = ttk.Scrollbar(type_frame, orient="vertical", command=type_tree.yview)
+        type_scrollbar.grid(row=0, column=1, sticky="ns")
+        type_tree.configure(yscrollcommand=type_scrollbar.set)
+        paned.add(type_frame, weight=1)
+
+        message_frame = ttk.Frame(paned)
+        message_frame.columnconfigure(0, weight=1)
+        message_frame.rowconfigure(0, weight=1)
+        message_tree = ttk.Treeview(message_frame, columns=("index", "local", "name", "fields"), show="headings", height=18)
+        self._configure_tree(
+            message_tree,
+            {
+                "index": ("全局序号", 80),
+                "local": ("类型序号", 80),
+                "name": ("类型", 130),
+                "fields": ("字段数", 70),
+            },
+        )
+        message_tree.grid(row=0, column=0, sticky="nsew")
+        message_scrollbar = ttk.Scrollbar(message_frame, orient="vertical", command=message_tree.yview)
+        message_scrollbar.grid(row=0, column=1, sticky="ns")
+        message_tree.configure(yscrollcommand=message_scrollbar.set)
+        paned.add(message_frame, weight=2)
+
+        field_frame = ttk.Frame(paned)
+        field_frame.columnconfigure(0, weight=1)
+        field_frame.rowconfigure(0, weight=1)
+        field_tree = ttk.Treeview(field_frame, columns=("name", "value", "units"), show="headings", height=18)
+        self._configure_tree(
+            field_tree,
+            {
+                "name": ("字段", 150),
+                "value": ("值", 260),
+                "units": ("单位", 80),
+            },
+        )
+        field_tree.grid(row=0, column=0, sticky="nsew")
+        field_scrollbar = ttk.Scrollbar(field_frame, orient="vertical", command=field_tree.yview)
+        field_scrollbar.grid(row=0, column=1, sticky="ns")
+        field_tree.configure(yscrollcommand=field_scrollbar.set)
+        paned.add(field_frame, weight=3)
+
+        fit_messages: list[dict] = []
+        messages_by_type: dict[str, list[dict]] = {}
+        message_lookup: dict[str, dict] = {}
+        loaded = False
+
+        def clear_tree(tree: ttk.Treeview) -> None:
+            for item_id in tree.get_children():
+                tree.delete(item_id)
+
+        def fill_messages(message_name: str | None = None) -> None:
+            clear_tree(message_tree)
+            clear_tree(field_tree)
+            selected_messages = fit_messages if message_name in (None, "__all__") else messages_by_type.get(message_name, [])
+            for message in selected_messages:
+                item_id = str(message.get("message_index"))
+                message_lookup[item_id] = message
+                fields = message.get("fields") or []
+                message_tree.insert(
+                    "",
+                    "end",
+                    iid=item_id,
+                    values=(
+                        message.get("message_index"),
+                        message.get("local_index"),
+                        message.get("message_name"),
+                        len(fields),
+                    ),
+                )
+            first_message = message_tree.get_children()
+            if first_message:
+                message_tree.selection_set(first_message[0])
+                fill_fields(first_message[0])
+
+        def load_fit_messages() -> None:
+            nonlocal fit_messages, messages_by_type, loaded
+            if loaded:
+                return
+            loaded = True
+            fit_messages = self._load_fit_messages(activity_id)
+            messages_by_type = {}
+            for message in fit_messages:
+                messages_by_type.setdefault(str(message.get("message_name")), []).append(message)
+
+            clear_tree(type_tree)
+            type_tree.insert("", "end", iid="__all__", values=("全部", len(fit_messages)))
+            for message_name in sorted(messages_by_type):
+                type_tree.insert("", "end", iid=message_name, values=(message_name, len(messages_by_type[message_name])))
+
+            summary_var.set(f"{len(fit_messages)} 条 FIT message，{len(messages_by_type)} 种类型")
+            if not fit_messages:
+                summary_var.set("没有 FIT 原始 message 数据，请先同步或回填 FIT 明细")
+
+        def fill_fields(item_id: str) -> None:
+            clear_tree(field_tree)
+            message = message_lookup.get(item_id)
+            if not message:
+                return
+            for index, field in enumerate(message.get("fields") or []):
+                field_tree.insert(
+                    "",
+                    "end",
+                    iid=f"{item_id}:{index}",
+                    values=(
+                        field.get("name"),
+                        _raw_value(field.get("value")),
+                        field.get("units") or "",
+                    ),
+                )
+
+        def on_type_select(_event: tk.Event) -> None:
+            selection = type_tree.selection()
+            fill_messages(selection[0] if selection else "__all__")
+
+        def on_message_select(_event: tk.Event) -> None:
+            selection = message_tree.selection()
+            if selection:
+                fill_fields(selection[0])
+
+        type_tree.bind("<<TreeviewSelect>>", on_type_select)
+        message_tree.bind("<<TreeviewSelect>>", on_message_select)
+
+        def on_tab_changed(_event: tk.Event) -> None:
+            if notebook.select() == str(tab):
+                load_fit_messages()
+
+        notebook.bind("<<NotebookTabChanged>>", on_tab_changed, add="+")
+
+        notebook.add(tab, text="FIT 原始数据")
+
+    def _draw_track(self, canvas: tk.Canvas, points: list[tuple[float, float]]) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 1)
+        height = max(canvas.winfo_height(), 1)
+        padding = 28
+
+        if len(points) < 2:
+            canvas.create_text(width / 2, height / 2, text="没有 GPS 轨迹数据", fill="#666666")
+            return
+
+        points = _sample_sequence(points, 2000)
+        mean_lat = sum(lat for lat, _lon in points) / len(points)
+        lon_scale = max(math.cos(math.radians(mean_lat)), 0.01)
+        projected = [(lon * lon_scale, lat) for lat, lon in points]
+        min_x = min(x for x, _y in projected)
+        max_x = max(x for x, _y in projected)
+        min_y = min(y for _x, y in projected)
+        max_y = max(y for _x, y in projected)
+
+        x_span = max(max_x - min_x, 0.000001)
+        y_span = max(max_y - min_y, 0.000001)
+        plot_width = max(width - padding * 2, 1)
+        plot_height = max(height - padding * 2, 1)
+        scale = min(plot_width / x_span, plot_height / y_span)
+        offset_x = (width - x_span * scale) / 2
+        offset_y = (height - y_span * scale) / 2
+
+        screen_points: list[float] = []
+        for x, y in projected:
+            screen_points.extend(
+                (
+                    offset_x + (x - min_x) * scale,
+                    height - (offset_y + (y - min_y) * scale),
+                )
+            )
+
+        canvas.create_line(*screen_points, fill="#2f6fb2", width=3)
+        start_x, start_y = screen_points[0], screen_points[1]
+        end_x, end_y = screen_points[-2], screen_points[-1]
+        canvas.create_oval(start_x - 5, start_y - 5, start_x + 5, start_y + 5, fill="#2e9d57", outline="")
+        canvas.create_oval(end_x - 5, end_y - 5, end_x + 5, end_y + 5, fill="#c84646", outline="")
+        canvas.create_text(12, 12, text="起", fill="#2e9d57", anchor="nw")
+        canvas.create_text(12, 30, text="终", fill="#c84646", anchor="nw")
+
+    def _draw_series_chart(
+        self,
+        canvas: tk.Canvas,
+        records: list[dict],
+        field: str,
+        formatter: Callable[[object], str],
+        color: str,
+        invert: bool = False,
+    ) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 1)
+        height = max(canvas.winfo_height(), 1)
+        left = 52
+        right = 14
+        top = 16
+        bottom = 22
+
+        points: list[tuple[float, float]] = []
+        for index, record in enumerate(records):
+            value = record.get(field)
+            if value is None:
+                continue
+            x_value = record.get("distance_m")
+            if x_value is None:
+                x_value = record.get("elapsed_s")
+            if x_value is None:
+                x_value = index
+            points.append((float(x_value), float(value)))
+
+        if len(points) < 2:
+            canvas.create_text(width / 2, height / 2, text="没有数据", fill="#666666")
+            return
+
+        points = _sample_sequence(points, 700)
+        min_x = min(x for x, _y in points)
+        max_x = max(x for x, _y in points)
+        min_y = min(y for _x, y in points)
+        max_y = max(y for _x, y in points)
+        if math.isclose(min_y, max_y):
+            min_y -= 1
+            max_y += 1
+        x_span = max(max_x - min_x, 1)
+        y_span = max(max_y - min_y, 0.000001)
+        plot_width = max(width - left - right, 1)
+        plot_height = max(height - top - bottom, 1)
+
+        canvas.create_line(left, top, left, height - bottom, fill="#d0d0d0")
+        canvas.create_line(left, height - bottom, width - right, height - bottom, fill="#d0d0d0")
+        canvas.create_text(6, top, text=formatter(max_y), anchor="nw", fill="#555555")
+        canvas.create_text(6, height - bottom - 12, text=formatter(min_y), anchor="nw", fill="#555555")
+
+        screen_points: list[float] = []
+        for x, y in points:
+            screen_x = left + ((x - min_x) / x_span) * plot_width
+            y_ratio = (y - min_y) / y_span if invert else (max_y - y) / y_span
+            screen_y = top + y_ratio * plot_height
+            screen_points.extend((screen_x, screen_y))
+
+        canvas.create_line(*screen_points, fill=color, width=2)
+        canvas.create_text(
+            width - right,
+            height - 8,
+            text=_km(max_x),
+            anchor="se",
+            fill="#555555",
+        )
+
     def _add_detail_rows(
         self,
         parent: ttk.Frame,
@@ -547,19 +947,23 @@ class DiaryDesktopApp:
             (
                 f"确定删除这条本地活动记录吗？\n\n"
                 f"{activity.get('start_time')}  {activity.get('activity_name')}\n\n"
-                "关联的主观记录也会删除；原始 FIT 文件会保留。"
+                "关联的主观记录、解析明细和原始 FIT 文件都会删除。"
             ),
             parent=parent,
         )
         if not confirmed:
             return
 
+        fit_path = activity.get("fit_path")
         with self._database.connect() as connection:
             deleted = ActivityRepository(connection).delete(activity_id)
             connection.commit()
 
         if deleted:
             self._append_log(f"已删除活动：{activity.get('start_time')} {activity.get('activity_name')}")
+            fit_message = self._delete_fit_file(fit_path)
+            if fit_message:
+                self._append_log(fit_message)
         else:
             self._append_log(f"删除活动失败：未找到 ID {activity_id}")
 
@@ -644,6 +1048,44 @@ class DiaryDesktopApp:
             on_success=lambda _: self.prompt_notes(),
         )
 
+    def _backfill_fit_details(self) -> None:
+        self._run_background(
+            "回填 FIT 明细",
+            lambda: self._workflow.backfill_fit_details(),
+        )
+
+    def _cleanup_orphan_fit_files(self) -> None:
+        confirmed = messagebox.askyesno(
+            "确认清理孤立 FIT",
+            (
+                "确定删除数据库中未引用的本地 FIT 文件吗？\n\n"
+                f"仅会清理目录：{self._settings.fit_raw_dir}"
+            ),
+            parent=self._root,
+        )
+        if not confirmed:
+            return
+        self._run_background(
+            "清理孤立 FIT",
+            lambda: self._workflow.cleanup_orphan_fit_files(),
+        )
+
+    def _delete_fit_file(self, fit_path: object) -> str | None:
+        if not fit_path:
+            return None
+        path = Path(str(fit_path)).resolve()
+        fit_root = self._settings.fit_raw_dir.resolve()
+        if not _is_relative_to(path, fit_root):
+            return f"跳过删除 FIT：路径不在 FIT 目录内 {path}"
+        if not path.exists():
+            return f"FIT 文件已不存在：{path}"
+        try:
+            path.unlink()
+        except Exception as exc:
+            return f"删除 FIT 文件失败：{path}，{exc}"
+        _remove_empty_parent_dirs(path.parent, fit_root)
+        return f"已删除 FIT 文件：{path}"
+
     def _run_background(
         self,
         label: str,
@@ -680,6 +1122,10 @@ class DiaryDesktopApp:
                 self._busy = False
                 self._append_log(f"{label}完成")
                 if isinstance(payload, SyncResult):
+                    self._append_log(payload.summary_text())
+                elif isinstance(payload, FitBackfillResult):
+                    self._append_log(payload.summary_text())
+                elif isinstance(payload, FitCleanupResult):
                     self._append_log(payload.summary_text())
                 elif payload is not None:
                     self._append_log(str(payload))
@@ -777,6 +1223,34 @@ def _pace(value: object) -> str:
     return f"{minutes}:{seconds:02d} /km"
 
 
+def _heart_rate(value: object) -> str:
+    if value is None:
+        return "未知"
+    return f"{int(float(value))} bpm"
+
+
+def _hr_range(avg_value: object, max_value: object) -> str:
+    if avg_value is None and max_value is None:
+        return "未知"
+    if max_value is None:
+        return _heart_rate(avg_value)
+    if avg_value is None:
+        return f"最高 {_heart_rate(max_value)}"
+    return f"{int(float(avg_value))}/{int(float(max_value))} bpm"
+
+
+def _cadence(value: object) -> str:
+    if value is None:
+        return "未知"
+    return f"{float(value):.0f} spm"
+
+
+def _stride(value: object) -> str:
+    if value is None:
+        return "未知"
+    return f"{float(value):.2f} m"
+
+
 def _value(value: object) -> str:
     if value is None:
         return "未知"
@@ -794,6 +1268,39 @@ def _detail_value(value: object) -> str:
         return "未知"
     text = str(value).strip()
     return text or "无"
+
+
+def _raw_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _sample_sequence(values: list[_T], max_count: int) -> list[_T]:
+    if len(values) <= max_count:
+        return values
+    step = (len(values) - 1) / (max_count - 1)
+    return [values[round(index * step)] for index in range(max_count)]
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _remove_empty_parent_dirs(start: Path, root: Path) -> None:
+    current = start
+    while _is_relative_to(current, root) and current != root:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
 
 
 def _read_date_text(value: str, label: str) -> date:

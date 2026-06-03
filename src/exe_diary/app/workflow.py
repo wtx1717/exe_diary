@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 from exe_diary.config import Settings
 from exe_diary.db.database import Database
@@ -9,6 +11,32 @@ from exe_diary.fit.parser import FitParser
 from exe_diary.garmin.client import GarminClient
 from exe_diary.garmin.sync import GarminSyncService, SyncResult
 from exe_diary.ui.prompt import PromptService
+
+
+@dataclass(frozen=True)
+class FitBackfillResult:
+    parsed_count: int
+    error_count: int
+    errors: tuple[str, ...] = ()
+
+    def summary_text(self) -> str:
+        text = f"FIT detail backfill finished: parsed={self.parsed_count}, errors={self.error_count}"
+        if self.errors:
+            text += "\n" + "\n".join(f"- {error}" for error in self.errors)
+        return text
+
+
+@dataclass(frozen=True)
+class FitCleanupResult:
+    deleted_count: int
+    skipped_count: int
+    errors: tuple[str, ...] = ()
+
+    def summary_text(self) -> str:
+        text = f"orphan FIT cleanup finished: deleted={self.deleted_count}, skipped={self.skipped_count}, errors={len(self.errors)}"
+        if self.errors:
+            text += "\n" + "\n".join(f"- {error}" for error in self.errors)
+        return text
 
 
 class AppWorkflow:
@@ -96,3 +124,87 @@ class AppWorkflow:
                 saved_count += 1
 
         return saved_count
+
+    def backfill_fit_details(self, limit: int | None = None) -> FitBackfillResult:
+        self._database.initialize()
+        parsed_count = 0
+        errors: list[str] = []
+
+        with self._database.connect() as connection:
+            activity_repo = ActivityRepository(connection)
+            parser = FitParser()
+
+            for activity in activity_repo.list_missing_fit_details(limit=limit):
+                fit_path = Path(str(activity.get("fit_path") or ""))
+                local_id = str(activity.get("local_id") or activity.get("id"))
+                if not fit_path.exists():
+                    errors.append(f"{local_id}: FIT file not found: {fit_path}")
+                    continue
+
+                try:
+                    parsed = parser.parse(fit_path)
+                    activity_repo.update_fit_details(int(activity["id"]), parsed)
+                    connection.commit()
+                except Exception as exc:
+                    connection.rollback()
+                    errors.append(f"{local_id}: {exc}")
+                    continue
+                parsed_count += 1
+
+        return FitBackfillResult(
+            parsed_count=parsed_count,
+            error_count=len(errors),
+            errors=tuple(errors),
+        )
+
+    def cleanup_orphan_fit_files(self) -> FitCleanupResult:
+        self._database.initialize()
+        fit_root = self._settings.fit_raw_dir.resolve()
+        deleted_count = 0
+        skipped_count = 0
+        errors: list[str] = []
+
+        with self._database.connect() as connection:
+            referenced_paths = {
+                Path(path).resolve()
+                for path in ActivityRepository(connection).list_fit_paths()
+            }
+
+        for fit_path in fit_root.rglob("*.fit"):
+            resolved_path = fit_path.resolve()
+            if resolved_path in referenced_paths:
+                skipped_count += 1
+                continue
+            if not _is_relative_to(resolved_path, fit_root):
+                skipped_count += 1
+                continue
+            try:
+                resolved_path.unlink()
+                deleted_count += 1
+            except Exception as exc:
+                errors.append(f"{resolved_path}: {exc}")
+
+        _remove_empty_dirs(fit_root)
+        return FitCleanupResult(
+            deleted_count=deleted_count,
+            skipped_count=skipped_count,
+            errors=tuple(errors),
+        )
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _remove_empty_dirs(root: Path) -> None:
+    if not root.exists():
+        return
+    for directory in sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue

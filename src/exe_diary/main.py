@@ -34,6 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("pending-notes", help="list activities that still need subjective notes")
     subparsers.add_parser("prompt-notes", help="open note prompts for activities that still need subjective notes")
+    backfill = subparsers.add_parser("backfill-fit-details", help="parse saved FIT files and persist detail data")
+    backfill.add_argument("--limit", type=int, default=None, help="maximum number of activities to backfill")
+    subparsers.add_parser("cleanup-orphan-fit", help="delete FIT files that are not referenced by the database")
     subparsers.add_parser("gui", help="open the desktop visual interface")
     return parser
 
@@ -86,6 +89,16 @@ def main() -> None:
     if args.command == "prompt-notes":
         saved_count = workflow.prompt_pending_notes()
         print(f"notes saved: {saved_count}")
+        return
+
+    if args.command == "backfill-fit-details":
+        result = workflow.backfill_fit_details(limit=args.limit)
+        print(result.summary_text())
+        return
+
+    if args.command == "cleanup-orphan-fit":
+        result = workflow.cleanup_orphan_fit_files()
+        print(result.summary_text())
         return
 
 
