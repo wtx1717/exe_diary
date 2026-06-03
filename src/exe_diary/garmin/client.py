@@ -8,6 +8,9 @@ from typing import Any
 from exe_diary.config import Settings
 
 
+MAX_FIT_DOWNLOAD_BYTES = 100 * 1024 * 1024
+
+
 class GarminClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -65,15 +68,24 @@ class GarminClient:
 
     @staticmethod
     def _extract_fit(data: bytes) -> bytes:
+        if len(data) > MAX_FIT_DOWNLOAD_BYTES:
+            raise RuntimeError("Downloaded payload is too large to be a normal FIT file.")
+
         if data.startswith(b"PK\x03\x04"):
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                fit_names = [name for name in archive.namelist() if name.lower().endswith(".fit")]
-                if not fit_names:
+                fit_infos = [
+                    info
+                    for info in archive.infolist()
+                    if not info.is_dir() and info.filename.lower().endswith(".fit")
+                ]
+                if not fit_infos:
                     raise RuntimeError("Downloaded zip archive does not contain a FIT file.")
-                data = archive.read(fit_names[0])
+                fit_info = sorted(fit_infos, key=lambda item: item.filename)[0]
+                if fit_info.file_size > MAX_FIT_DOWNLOAD_BYTES:
+                    raise RuntimeError("Downloaded FIT file is too large.")
+                data = archive.read(fit_info)
 
-        if b".FIT" not in data[8:15]:
+        if len(data) < 14 or b".FIT" not in data[8:15]:
             raise RuntimeError("Downloaded payload is not a valid FIT file.")
 
         return data
-

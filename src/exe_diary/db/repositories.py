@@ -7,6 +7,9 @@ from datetime import datetime
 from exe_diary.fit.models import ActivitySummary, FitLap, FitRawMessage, FitRecordPoint, ParsedFitMetrics
 
 
+MAX_QUERY_LIMIT = 5000
+
+
 class ActivityRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -101,6 +104,7 @@ class ActivityRepository:
         return [dict(row) for row in rows]
 
     def list_recent(self, limit: int = 50) -> list[dict]:
+        limit = _normalize_limit(limit, default=50)
         rows = self._connection.execute(
             """
             SELECT
@@ -241,6 +245,7 @@ class ActivityRepository:
         """
         params: tuple[int, ...] = ()
         if limit is not None:
+            limit = _normalize_limit(limit)
             sql += " LIMIT ?"
             params = (limit,)
         rows = self._connection.execute(sql, params).fetchall()
@@ -446,6 +451,7 @@ class SyncRunRepository:
         )
 
     def list_recent(self, limit: int = 20) -> list[dict]:
+        limit = _normalize_limit(limit, default=20)
         rows = self._connection.execute(
             """
             SELECT *
@@ -456,3 +462,13 @@ class SyncRunRepository:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _normalize_limit(limit: int | None, *, default: int | None = None) -> int:
+    if limit is None:
+        if default is None:
+            raise ValueError("limit is required")
+        limit = default
+    if limit <= 0 or limit > MAX_QUERY_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_QUERY_LIMIT}")
+    return limit

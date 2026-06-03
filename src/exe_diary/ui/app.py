@@ -18,7 +18,7 @@ from exe_diary.app.workflow import AppWorkflow, FitBackfillResult, FitCleanupRes
 from exe_diary.config import Settings, load_settings, normalize_daily_time, save_auto_run_settings
 from exe_diary.db.database import Database
 from exe_diary.db.repositories import ActivityNoteRepository, ActivityRepository, SyncRunRepository
-from exe_diary.garmin.sync import SyncResult
+from exe_diary.garmin.sync import MAX_SYNC_ACTIVITIES, SyncResult
 from exe_diary.ui.prompt import PromptService
 
 
@@ -1200,6 +1200,8 @@ class DiaryDesktopApp:
             return f"跳过删除 FIT：路径不在 FIT 目录内 {path}"
         if not path.exists():
             return f"FIT 文件已不存在：{path}"
+        if not path.is_file() or path.suffix.lower() != ".fit":
+            return f"跳过删除 FIT：不是有效的 .fit 文件 {path}"
         try:
             path.unlink()
         except Exception as exc:
@@ -1277,23 +1279,39 @@ class DiaryDesktopApp:
         except ValueError:
             messagebox.showerror("参数错误", "活动上限需要填写整数。", parent=self._root)
             return None
+        if value > MAX_SYNC_ACTIVITIES:
+            messagebox.showerror(
+                "参数错误",
+                f"活动上限不能超过 {MAX_SYNC_ACTIVITIES}。",
+                parent=self._root,
+            )
+            return None
         if value <= 0:
             messagebox.showerror("参数错误", "活动上限需要大于 0。", parent=self._root)
             return None
         return value
 
     def _replace_rows(self, tree: ttk.Treeview, rows: list[tuple[Any, ...]]) -> None:
-        for item_id in tree.get_children():
-            tree.delete(item_id)
+        item_ids = tree.get_children()
+        if item_ids:
+            tree.delete(*item_ids)
         for row in rows:
             tree.insert("", "end", values=row)
 
     def _replace_activity_rows(self, tree: ttk.Treeview, rows: list[tuple[Any, ...]]) -> None:
-        for item_id in tree.get_children():
-            tree.delete(item_id)
+        selected_ids = set(tree.selection())
+        item_ids = tree.get_children()
+        if item_ids:
+            tree.delete(*item_ids)
+        restored_selection: list[str] = []
         for row in rows:
             activity_id, *values = row
-            tree.insert("", "end", iid=str(activity_id), values=values)
+            item_id = str(activity_id)
+            tree.insert("", "end", iid=item_id, values=values)
+            if item_id in selected_ids:
+                restored_selection.append(item_id)
+        if restored_selection:
+            tree.selection_set(restored_selection)
 
     def _append_log(self, message: str) -> None:
         self._log.configure(state="normal")

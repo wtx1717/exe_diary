@@ -3,13 +3,35 @@ from __future__ import annotations
 import argparse
 from datetime import date
 
-from exe_diary.app.workflow import AppWorkflow
+from exe_diary.app.workflow import AppWorkflow, MAX_BACKFILL_LIMIT
 from exe_diary.config import load_settings
 from exe_diary.db.database import Database
+from exe_diary.garmin.sync import MAX_SYNC_ACTIVITIES
 
 
 def _date_arg(value: str) -> date:
-    return date.fromisoformat(value)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD format") from exc
+
+
+def _sync_limit_arg(value: str) -> int:
+    return _positive_limit_arg(value, max_value=MAX_SYNC_ACTIVITIES)
+
+
+def _backfill_limit_arg(value: str) -> int:
+    return _positive_limit_arg(value, max_value=MAX_BACKFILL_LIMIT)
+
+
+def _positive_limit_arg(value: str, *, max_value: int) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer") from exc
+    if limit <= 0 or limit > max_value:
+        raise argparse.ArgumentTypeError(f"limit must be between 1 and {max_value}")
+    return limit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,23 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init-db", help="initialize the local SQLite database")
 
     run = subparsers.add_parser("run", help="sync today's activities and prompt for subjective notes")
-    run.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
+    run.add_argument("--limit", type=_sync_limit_arg, default=None, help="maximum number of running activities to process")
 
     sync_today = subparsers.add_parser("sync-today", help="sync today's Garmin running activities")
-    sync_today.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
+    sync_today.add_argument("--limit", type=_sync_limit_arg, default=None, help="maximum number of running activities to process")
 
     sync_range = subparsers.add_parser("sync-range", help="manually sync a date range")
     sync_range.add_argument("--from-date", required=True, type=_date_arg)
     sync_range.add_argument("--to-date", required=True, type=_date_arg)
-    sync_range.add_argument("--limit", type=int, default=None, help="maximum number of running activities to process")
+    sync_range.add_argument("--limit", type=_sync_limit_arg, default=None, help="maximum number of running activities to process")
 
     sync_latest = subparsers.add_parser("sync-latest", help="sync the latest Garmin running activities for local testing")
-    sync_latest.add_argument("--limit", type=int, default=2, help="maximum number of running activities to process")
+    sync_latest.add_argument("--limit", type=_sync_limit_arg, default=2, help="maximum number of running activities to process")
 
     subparsers.add_parser("pending-notes", help="list activities that still need subjective notes")
     subparsers.add_parser("prompt-notes", help="open note prompts for activities that still need subjective notes")
     backfill = subparsers.add_parser("backfill-fit-details", help="parse saved FIT files and persist detail data")
-    backfill.add_argument("--limit", type=int, default=None, help="maximum number of activities to backfill")
+    backfill.add_argument("--limit", type=_backfill_limit_arg, default=None, help="maximum number of activities to backfill")
     subparsers.add_parser("cleanup-orphan-fit", help="delete FIT files that are not referenced by the database")
     subparsers.add_parser("gui", help="open the desktop visual interface")
     subparsers.add_parser(
@@ -106,6 +128,8 @@ def main() -> None:
         return
 
     if args.command == "sync-range":
+        if args.from_date > args.to_date:
+            raise SystemExit("--from-date must not be later than --to-date")
         result = workflow.sync_range(args.from_date, args.to_date, max_activities=args.limit)
         print(result.summary_text())
         return

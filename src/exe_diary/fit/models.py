@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import Any
 
@@ -158,10 +159,19 @@ def _parse_start_time(value: str) -> datetime:
 def _number(value: Any) -> float | None:
     if value is None:
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _integer(value: Any) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None

@@ -12,6 +12,9 @@ from exe_diary.fit.parser import FitParser
 from exe_diary.garmin.client import GarminClient
 
 
+MAX_SYNC_ACTIVITIES = 500
+
+
 @dataclass(frozen=True)
 class SyncResult:
     downloaded_count: int
@@ -52,6 +55,11 @@ class GarminSyncService:
         to_date: date | None,
         max_activities: int | None = None,
     ) -> SyncResult:
+        if from_date is not None and to_date is not None and from_date > to_date:
+            raise ValueError("from_date must not be later than to_date.")
+        if max_activities is not None and (max_activities <= 0 or max_activities > MAX_SYNC_ACTIVITIES):
+            raise ValueError(f"max_activities must be between 1 and {MAX_SYNC_ACTIVITIES}.")
+
         downloaded_count = 0
         imported_count = 0
         skipped_count = 0
@@ -88,7 +96,13 @@ class GarminSyncService:
                 else:
                     fit_data = self._client.download_fit(activity_id)
                     fit_path.parent.mkdir(parents=True, exist_ok=True)
-                    fit_path.write_bytes(fit_data)
+                    tmp_path = fit_path.with_suffix(f"{fit_path.suffix}.tmp")
+                    try:
+                        tmp_path.write_bytes(fit_data)
+                        tmp_path.replace(fit_path)
+                    except Exception:
+                        tmp_path.unlink(missing_ok=True)
+                        raise
                     downloaded_count += 1
 
                 fit_sha256 = hashlib.sha256(fit_data).hexdigest()

@@ -13,6 +13,9 @@ from exe_diary.garmin.sync import GarminSyncService, SyncResult
 from exe_diary.ui.prompt import PromptService
 
 
+MAX_BACKFILL_LIMIT = 5000
+
+
 @dataclass(frozen=True)
 class FitBackfillResult:
     parsed_count: int
@@ -126,6 +129,9 @@ class AppWorkflow:
         return saved_count
 
     def backfill_fit_details(self, limit: int | None = None) -> FitBackfillResult:
+        if limit is not None and (limit <= 0 or limit > MAX_BACKFILL_LIMIT):
+            raise ValueError(f"limit must be between 1 and {MAX_BACKFILL_LIMIT}.")
+
         self._database.initialize()
         parsed_count = 0
         errors: list[str] = []
@@ -160,18 +166,21 @@ class AppWorkflow:
     def cleanup_orphan_fit_files(self) -> FitCleanupResult:
         self._database.initialize()
         fit_root = self._settings.fit_raw_dir.resolve()
+        if not fit_root.exists():
+            return FitCleanupResult(deleted_count=0, skipped_count=0)
+
         deleted_count = 0
         skipped_count = 0
         errors: list[str] = []
 
         with self._database.connect() as connection:
-            referenced_paths = {
-                Path(path).resolve()
-                for path in ActivityRepository(connection).list_fit_paths()
-            }
+            referenced_paths = {Path(path).resolve() for path in ActivityRepository(connection).list_fit_paths()}
 
         for fit_path in fit_root.rglob("*.fit"):
             resolved_path = fit_path.resolve()
+            if not resolved_path.is_file():
+                skipped_count += 1
+                continue
             if resolved_path in referenced_paths:
                 skipped_count += 1
                 continue

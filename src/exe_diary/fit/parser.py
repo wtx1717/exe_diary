@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+import math
 from pathlib import Path
 
 from exe_diary.fit.models import FitLap, FitRawField, FitRawMessage, FitRecordPoint, ParsedFitMetrics
@@ -354,13 +355,22 @@ def _parse_raw_messages(fit_file: object) -> list[FitRawMessage]:
 def _float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _int(value: object) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _text(value: object) -> str | None:
